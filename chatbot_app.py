@@ -1,17 +1,8 @@
-# %%
+
 from dotenv import load_dotenv
 import os
-
-
-
-load_dotenv(override = True)
-OPENAI_API_KEY=os.getenv('OPENAI_API_KEY')
-TAVILY_API_KEY=os.getenv('TAVILY_API_KEY')
-
-
 import streamlit as st
-from dotenv import load_dotenv
-import os
+import json
 from langchain.document_loaders import WebBaseLoader
 from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings
@@ -21,49 +12,58 @@ from langchain.prompts import PromptTemplate
 from langchain.chat_models import ChatOpenAI
 from pypdf import PdfReader
 from langchain.schema import Document
-import chromadb
-import json
-import chromadb.api
-from chromadb.api.client import SharedSystemClient
-
-from chromadb.api.client import SharedSystemClient
-import streamlit as st
 from langchain.memory import ConversationBufferMemory
+import chromadb
+from chromadb.api.client import SharedSystemClient
 
+# Load environment variables
+load_dotenv(override=True)
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 
-
-
-
-# Streamlit app title and description
-st.title("RAG chatbot")
+# Streamlit app title and header
+st.set_page_config(page_title="RAG Chatbot", page_icon="🤖", layout="wide")
+st.title("📄 AI-Powered Document Q&A Chatbot")
 st.markdown("""
-Upload a PDF document, and ask questions about its content using an AI-powered chat interface.
+Welcome to the **AI-Powered Document Q&A Chatbot**!  
+Upload a PDF document in the sidebar and interact with it using natural language queries.  
 """)
 
 # Initialize or load chat history
 if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []  # To store chat history as a list of dictionaries
+    st.session_state.chat_history = []
+if "memory" not in st.session_state:
+    st.session_state.memory = ConversationBufferMemory()
 
 # Function to save chat history to a file
 def save_chat_history():
-    # Define directory and file path
     directory = "d:/chat history"
     file_path = os.path.join(directory, "chat_history.txt")
     
-    # Ensure the directory exists
     if not os.path.exists(directory):
         os.makedirs(directory)
     with open(file_path, "w") as file:
         json.dump(st.session_state.chat_history, file, indent=4)
 
-# Upload a PDF file
+# Sidebar for file upload and processing
+
 with st.sidebar:
     SharedSystemClient.clear_system_cache()
-    uploaded_file = st.file_uploader("Upload a PDF file", type=["pdf"])
-    if uploaded_file:
-        st.write(f"Processing file: {uploaded_file.name}")
+    collection_name = st.text_input("Enter a collection name (or leave blank for default):", "default_collection")
 
-    # Extract text from PDF
+# Connect to ChromaDB
+    client = chromadb.Client()
+
+# Check if collection exists, create if not
+    
+    collection = client.get_or_create_collection(name=collection_name)
+    st.success(f"Using collection: {collection_name}")
+    
+    
+    uploaded_file = st.file_uploader("Upload a PDF file:", type=["pdf"])
+    
+    if uploaded_file:
+        st.success(f"File uploaded: {uploaded_file.name}")
+        
         reader = PdfReader(uploaded_file)
         documents = []
         for page_number, page in enumerate(reader.pages):
@@ -71,27 +71,24 @@ with st.sidebar:
             document = Document(page_content=page_text, metadata={'filetype': 'resume', 'page': page_number + 1})
             documents.append(document)
 
-    # Split documents into chunks
         text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
             chunk_size=1000, chunk_overlap=200
         )
         doc_splits = text_splitter.split_documents(documents)
-    
-        client = chromadb.Client()
 
-        collection = client.get_or_create_collection(name="rushang3")
 
-    # Create Chroma VectorStore
+
         vectorstore = Chroma.from_documents(
             documents=doc_splits,
-            collection_name="rushang3",
+            collection_name=str(collection_name),
             embedding=OpenAIEmbeddings(api_key=OPENAI_API_KEY),
         )
 
-    # Define LLM and prompt template
         llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
         PROMPT_TEMPLATE = """
-        You are an AI assistant. Using the following retrieved documents, answer the user's query accurately and concisely.
+        You are an AI assistant. Using the following retrieved documents, answer the user's query accurately and concisely.You can give detailed responses utilizing the information in the documents.
+        Don't answer questions that are not related to the documents or hallucinate any answer on your
+        own.
 
         Retrieved Documents:
         {results}
@@ -101,7 +98,6 @@ with st.sidebar:
 
         Your Response:
         """
-
         prompt_template = PromptTemplate(
             input_variables=["results", "user_query"],
             template=PROMPT_TEMPLATE,
@@ -109,37 +105,38 @@ with st.sidebar:
         llm_chain = LLMChain(llm=llm, prompt=prompt_template)
         retriever = vectorstore.as_retriever(k=3)
 
-    # Chat interface
-st.subheader("Chat with the document")
-query = st.text_input("Ask a question about the document:")
+# Main content area for chat interface
+st.subheader("💬 Chat with the Document")
+st.markdown("Ask a question about the uploaded document, and get AI-generated responses.")
+
+query = st.text_input("🔍 Your Question:")
 if query:
-        # Retrieve similar documents
     retrieved_docs = retriever.get_relevant_documents(query)
     retrieved_docs_text = "\n\n".join([doc.page_content for doc in retrieved_docs])
 
-        # Run the LLM chain
     response = llm_chain.run(
+        history=st.session_state.memory.buffer,
         results=retrieved_docs_text,
         user_query=query
     )
-    st.write("### AI Response:")
-    st.write(response)
+    st.write("### 🤖 AI Response:")
+    st.success(response)
+
     SharedSystemClient.clear_system_cache()
     st.session_state.chat_history.append({"user": query, "AI": response})
-        
-        
-        # Save to file (optional step to persist)
-    save_chat_history()
-        
-if st.button("Show Chat History"):
-    if st.session_state.chat_history:
-        st.subheader("Chat History")
-        for entry in st.session_state.chat_history:
-            st.write(f"**Q:** {entry['user']}")
-            st.write(f"**A:** {entry['AI']}")
-    else:
-        st.write("No chat history available.")
 
+    save_chat_history()
+
+# Button to display chat history
+if st.button("📜 Show Chat History"):
+    if st.session_state.chat_history:
+        st.subheader("🗂️ Chat History")
+        st.markdown("Here's the history of your interactions with the document:")
+        for entry in st.session_state.chat_history:
+            st.markdown(f"**Q:** {entry['user']}")
+            st.markdown(f"**A:** {entry['AI']}")
+    else:
+        st.warning("No chat history available.")
 
 
 
